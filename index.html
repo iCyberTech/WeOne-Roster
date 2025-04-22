@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Roster Admin Portal</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-app.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-firestore.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-auth.js"></script>
+    <script src="https://www.gstatic.com/firebasejs/8.10.0/firebase-analytics.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.10.377/pdf.min.js"></script>
+    <style>
+        body { padding: 20px; background-color: #f5f5f5; }
+        .container { max-width: 1000px; }
+        .login-container { max-width: 400px; margin: 100px auto; }
+        .schedule-cell { width: 30px; text-align: center; }
+        .day-header { width: 30px; text-align: center; font-weight: bold; }
+        .shift-code { font-weight: bold; }
+        #pdfViewer { width: 100%; height: 500px; border: 1px solid #ddd; margin-bottom: 20px; }
+        #pdfPreview { display: none; }
+    </style>
+</head>
+<body>
+    <div class="container" id="app">
+        <div class="login-container" id="loginView">
+            <h2 class="mb-4">Admin Login</h2>
+            <div class="mb-3">
+                <input type="email" class="form-control" id="email" placeholder="Email">
+            </div>
+            <div class="mb-3">
+                <input type="password" class="form-control" id="password" placeholder="Password">
+            </div>
+            <button class="btn btn-primary" onclick="login()">Login</button>
+            <div id="loginError" class="text-danger mt-2"></div>
+        </div>
+
+        <div id="adminView" style="display: none;">
+            <div class="d-flex justify-content-between align-items-center mb-4">
+                <h2>Roster Management</h2>
+                <button class="btn btn-danger" onclick="logout()">Logout</button>
+            </div>
+            
+            <div class="card mb-4">
+                <div class="card-header">
+                    <h5>Upload Roster</h5>
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label class="form-label">Month/Year</label>
+                        <input type="month" class="form-control" id="rosterMonth" min="2025-04" value="2025-04">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Roster File (Excel/CSV/PDF)</label>
+                        <input type="file" class="form-control" id="rosterFile" accept=".xlsx,.xls,.csv,.pdf">
+                    </div>
+                    <div id="pdfPreview">
+                        <h6>PDF Preview</h6>
+                        <div id="pdfViewer"></div>
+                        <div class="form-check mb-3">
+                            <input class="form-check-input" type="checkbox" id="confirmUpload">
+                            <label class="form-check-label" for="confirmUpload">
+                                Confirm this is the correct file
+                            </label>
+                        </div>
+                    </div>
+                    <button class="btn btn-primary" onclick="uploadRoster()">Upload Roster</button>
+                    <div id="uploadStatus" class="mt-2"></div>
+                </div>
+            </div>
+            
+            <div class="card">
+                <div class="card-header">
+                    <h5>Current Roster Preview</h5>
+                </div>
+                <div class="card-body">
+                    <div class="mb-3">
+                        <label class="form-label">Select Month</label>
+                        <select class="form-select" id="previewMonth" onchange="loadRosterPreview()">
+                            <option value="2025_04">April 2025</option>
+                        </select>
+                    </div>
+                    <div id="rosterPreview" class="table-responsive">
+                        <p>Select a month to preview roster</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // Firebase configuration
+const firebaseConfig = {
+    apiKey: "AIzaSyBnJ0m0QnNyC4pnv-dBEgC3yiq65YPwZvM",
+    authDomain: "weone-roster.firebaseapp.com",
+    projectId: "weone-roster",
+    storageBucket: "weone-roster.appspot.com",
+    messagingSenderId: "335364720116",
+    appId: "1:335364720116:web:ae669c448aba3788aca5a1",
+    measurementId: "G-Z8MBXC4ZFR"
+};
+
+// Initialize Firebase
+const app = firebase.initializeApp(firebaseConfig);
+const db = firebase.firestore();
+const auth = firebase.auth();
+const analytics = firebase.analytics();
+
+// Initialize PDF.js
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/2.10.377/pdf.worker.min.js';
+
+// Check auth state
+auth.onAuthStateChanged(user => {
+    if (user) {
+        document.getElementById('loginView').style.display = 'none';
+        document.getElementById('adminView').style.display = 'block';
+        loadRosterPreview();
+    } else {
+        document.getElementById('loginView').style.display = 'block';
+        document.getElementById('adminView').style.display = 'none';
+    }
+});
+
+// Login function
+function login() {
+    const email = document.getElementById('email').value;
+    const password = document.getElementById('password').value;
+    
+    auth.signInWithEmailAndPassword(email, password)
+        .catch(error => {
+            document.getElementById('loginError').textContent = error.message;
+        });
+}
+
+// Logout function
+function logout() {
+    auth.signOut();
+}
+
+// Handle file selection
+document.getElementById('rosterFile').addEventListener('change', function(e) {
+    const file = e.target.files[0];
+    if (!file) return;
+    
+    if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
+        previewPDF(file);
+    } else {
+        document.getElementById('pdfPreview').style.display = 'none';
+    }
+});
+
+// Preview PDF file
+function previewPDF(file) {
+    const fileReader = new FileReader();
+    
+    fileReader.onload = function() {
+        const typedarray = new Uint8Array(this.result);
+        
+        // Load the PDF document
+        pdfjsLib.getDocument(typedarray).promise.then(function(pdf) {
+            // Fetch the first page
+            pdf.getPage(1).then(function(page) {
+                const scale = 1.5;
+                const viewport = page.getViewport({ scale: scale });
+                
+                // Prepare canvas
+                const canvas = document.createElement('canvas');
+                const context = canvas.getContext('2d');
+                canvas.height = viewport.height;
+                canvas.width = viewport.width;
+                
+                // Render PDF page into canvas context
+                const renderContext = {
+                    canvasContext: context,
+                    viewport: viewport
+                };
+                
+                const renderTask = page.render(renderContext);
+                renderTask.promise.then(function() {
+                    document.getElementById('pdfViewer').innerHTML = '';
+                    document.getElementById('pdfViewer').appendChild(canvas);
+                    document.getElementById('pdfPreview').style.display = 'block';
+                });
+            });
+        });
+    };
+    
+    fileReader.readAsArrayBuffer(file);
+}
+
+// Upload roster from file
+function uploadRoster() {
+    const fileInput = document.getElementById('rosterFile');
+    const monthInput = document.getElementById('rosterMonth');
+    const confirmUpload = document.getElementById('confirmUpload');
+    
+    if (!fileInput.files.length) {
+        document.getElementById('uploadStatus').textContent = 'Please select a file';
+        return;
+    }
+    
+    const file = fileInput.files[0];
+    const monthYear = monthInput.value.replace('-', '_');
+    
+    // For PDF files, require confirmation
+    if ((file.type === 'application/pdf' || file.name.endsWith('.pdf')) && !confirmUpload.checked) {
+        document.getElementById('uploadStatus').textContent = 'Please confirm the PDF file is correct';
+        return;
+    }
+    
+    if (file.type === 'application/pdf' || file.name.endsWith('.pdf')) {
+        uploadPDFRoster(file, monthYear);
+    } else {
+        uploadExcelRoster(file, monthYear);
+    }
+}
+
+// Upload Excel/CSV roster
+function uploadExcelRoster(file, monthYear) {
+    const reader = new FileReader();
+    
+    reader.onload = function(e) {
+        try {
+            const data = new Uint8Array(e.target.result);
+            const workbook = XLSX.read(data, { type: 'array' });
+            const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+            const jsonData = XLSX.utils.sheet_to_json(firstSheet, { header: 1 });
+            
+            processRosterData(jsonData, monthYear);
+        } catch (error) {
+            document.getElementById('uploadStatus').textContent = 'Error processing file: ' + error.message;
+        }
+    };
+    
+    reader.readAsArrayBuffer(file);
+}
+
+// Upload PDF roster
+function uploadPDFRoster(file, monthYear) {
+    document.getElementById('uploadStatus').textContent = 'Processing PDF...';
+    
+    // This is a simplified approach. In production, you would need:
+    // 1. A server-side PDF text extraction service, or
+    // 2. A more sophisticated client-side PDF parser
+    // Here we'll just show a message about PDF processing limitations
+    
+    document.getElementById('uploadStatus').textContent = 
+        'PDF upload requires additional processing. For now, please use Excel/CSV format for automatic processing.';
+    
+    // In a real implementation, you would:
+    // 1. Extract text from PDF
+    // 2. Parse the text into structured data
+    // 3. Process similar to Excel data
+    // This typically requires a server-side component or advanced client-side parsing
+}
+
+// Process roster data from Excel
+function processRosterData(data, monthYear) {
+    // Extract days (assuming first row is days)
+    const days = data[0].slice(5, 35).map(day => day.trim());
+    
+    // Extract shift codes
+    const codes = {
+        "VI": "Morning Shift",
+        "VJ": "Evening Shift",
+        "YY": "Day Off",
+        "NB": "Night Shift",
+        "DF": "Day Shift",
+        "AL": "Annual Leave",
+        "OJTD": "On Job Training Day",
+        "OJT": "On Job Training"
+    };
+    
+    // Process employees
+    const employees = [];
+    for (let i = 1; i < data.length; i++) {
+        const row = data[i];
+        if (!row[0] || isNaN(row[0])) continue; // Skip empty or header rows
+        
+        const schedule = {};
+        for (let d = 0; d < days.length; d++) {
+            schedule[(d+1).toString()] = row[5 + d] || '';
+        }
+        
+        employees.push({
+            we_one_id: row[1].toString(),
+            ek_id: row[2].toString(),
+            name: row[3].toString().trim(),
+            area: row[4].toString().trim(),
+            designation: row[5].toString().trim(),
+            schedule: schedule
+        });
+    }
+    
+    // Save to Firestore
+    saveRosterToFirestore(monthYear, days, codes, employees);
+}
+
+// Save roster data to Firestore
+function saveRosterToFirestore(monthYear, days, codes, employees) {
+    const statusElement = document.getElementById('uploadStatus');
+    statusElement.textContent = 'Uploading roster...';
+    
+    const batch = db.batch();
+    const rosterRef = db.collection('rosters').doc(monthYear);
+    
+    // Add metadata
+    batch.set(rosterRef, {
+        days: days,
+        codes: codes,
+        lastUpdated: firebase.firestore.FieldValue.serverTimestamp()
+    });
+    
+    // Add employees
+    employees.forEach(emp => {
+        const empRef = rosterRef.collection('employees').doc(emp.we_one_id);
+        batch.set(empRef, {
+            ek_id: emp.ek_id,
+            name: emp.name,
+            area: emp.area,
+            designation: emp.designation,
+            schedule: emp.schedule
+        });
+    });
+    
+    batch.commit()
+        .then(() => {
+            statusElement.textContent = 'Roster uploaded successfully!';
+            loadRosterPreview();
+        })
+        .catch(error => {
+            statusElement.textContent = 'Error uploading roster: ' + error.message;
+        });
+}
+
+// Load roster preview
+function loadRosterPreview() {
+    const monthYear = document.getElementById('previewMonth').value;
+    const previewElement = document.getElementById('rosterPreview');
+    previewElement.innerHTML = '<p>Loading...</p>';
+    
+    db.collection('rosters').doc(monthYear).get()
+        .then(doc => {
+            if (!doc.exists) {
+                previewElement.innerHTML = '<p>No roster found for selected month</p>';
+                return;
+            }
+            
+            const metadata = doc.data();
+            return db.collection('rosters').doc(monthYear).collection('employees').limit(10).get()
+                .then(snapshot => {
+                    if (snapshot.empty) {
+                        previewElement.innerHTML = '<p>No employees found in this roster</p>';
+                        return;
+                    }
+                    
+                    // Create HTML table
+                    let html = `
+                        <table class="table table-bordered table-sm">
+                            <thead>
+                                <tr>
+                                    <th>Sr No</th>
+                                    <th>WE ONE ID</th>
+                                    <th>EK ID</th>
+                                    <th>Name</th>
+                                    <th>Area</th>
+                                    <th>Designation</th>
+                    `;
+                    
+                    // Add day headers
+                    metadata.days.forEach((day, index) => {
+                        html += `<th class="day-header">${day}<br>${index+1}</th>`;
+                    });
+                    
+                    html += `</tr></thead><tbody>`;
+                    
+                    // Add employee rows
+                    let srNo = 1;
+                    snapshot.forEach(empDoc => {
+                        const emp = empDoc.data();
+                        html += `
+                            <tr>
+                                <td>${srNo++}</td>
+                                <td>${empDoc.id}</td>
+                                <td>${emp.ek_id}</td>
+                                <td>${emp.name}</td>
+                                <td>${emp.area}</td>
+                                <td>${emp.designation}</td>
+                        `;
+                        
+                        // Add schedule cells
+                        for (let i = 1; i <= metadata.days.length; i++) {
+                            const shift = emp.schedule[i.toString()] || '';
+                            html += `<td class="schedule-cell">${shift}</td>`;
+                        }
+                        
+                        html += `</tr>`;
+                    });
+                    
+                    html += `</tbody></table>`;
+                    html += `<p>Showing first 10 employees. Total employees: ${snapshot.size}</p>`;
+                    
+                    previewElement.innerHTML = html;
+                });
+        })
+        .catch(error => {
+            previewElement.innerHTML = `<p class="text-danger">Error loading roster: ${error.message}</p>`;
+        });
+}
+    </script>
+</body>
+</html>
